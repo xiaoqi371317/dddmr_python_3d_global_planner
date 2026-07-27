@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dddmr-py"
+version = "1.0.0"
+description = "dddmr 3D 导航栈(感知+全局规划)的纯 Python 复现: PCD 点云 -> 3D 导航目标点 -> 路径"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "scipy>=1.7"]
+
+[project.scripts]
+dddmr-py = "dddmr_py.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dddmr_py*"]

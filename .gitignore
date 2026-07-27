@@ -1,0 +1,39 @@
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test, coverage, and type-checker caches
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Claude settings and session data
+.claude/
+
+# Generated navigation outputs
+path.csv
+path.json
+path.html
+map_debug.html
+result.html

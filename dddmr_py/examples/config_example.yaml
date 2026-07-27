@@ -1,0 +1,24 @@
+# dddmr_py 参数示例:  python -m dddmr_py plan map.pcd --config examples/config_example.yaml ...
+robot_radius: 0.35        # 机器人外接圆半径 (m)
+robot_height: 1.20        # 机器人高度 (m), 用于净空/多层判断
+max_slope_deg: 25.0       # 可通行最大坡度
+max_step: 0.12            # 可跨越最大台阶
+max_roughness: 0.05       # 局部平面残差上限
+
+voxel_size: 0.10          # 体素降采样 (决定节点密度与耗时)
+normal_k: 16              # 法向量估计近邻数
+
+inflation_radius: 0.55    # 障碍膨胀半径
+cost_scaling_factor: 3.0  # 膨胀代价衰减
+lethal_cost: 254.0
+
+connection_radius: 0.0    # <=0 时自动取 2.6*voxel_size
+max_neighbors: 12
+
+heuristic_weight: 1.0     # 0=Dijkstra, 1=A*, >1=加权A*(更快, 次优)
+cost_weight: 0.02         # 代价对边权影响
+snap_radius: 1.5          # 起终点吸附半径
+
+path_resolution: 0.10
+smooth_iterations: 3
+shortcut: true
