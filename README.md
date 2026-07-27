@@ -6,6 +6,20 @@
 参考对象是 [dddmr_navigation](https://github.com/dfl-rlab/dddmr_navigation)（DDDMobileRobot 的 3D 导航栈）
 中「感知静态层 + 全局规划器」这两块的算法思路，用 Python 重写并做了工程化封装。
 
+## Demo
+
+<p align="center">
+  <img src="assets/demo1.png" alt="Demo 1" width="90%" />
+</p>
+
+<p align="center">
+  <img src="assets/demo2.png" alt="Demo 2" width="90%" />
+</p>
+
+<p align="center">
+  <img src="assets/demo3.png" alt="Demo 3" width="90%" />
+</p>
+
 | dddmr (ROS 2, C++) | 本项目 (纯 Python) |
 |---|---|
 | `dddmr_perception_3d` 静态层 | `perception.py`：体素降采样 / 法向量 / 可站立面提取 / 本体碰撞 / 膨胀代价 |
@@ -15,14 +29,6 @@
 | `dddmr_lego_loam` / `mcl_3dl` / 局部规划 | **未包含**（本项目只做静态地图上的全局规划，见「范围与局限」）|
 
 ---
-
-## Demo
-
-<p align="center">
-  <img src="assets/demo1.png" alt="Demo 1" width="32%" />
-  <img src="assets/demo2.png" alt="Demo 2" width="32%" />
-  <img src="assets/demo3.png" alt="Demo 3" width="32%" />
-</p>
 
 ## 1. 安装
 
