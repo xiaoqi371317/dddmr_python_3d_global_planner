@@ -16,6 +16,14 @@
 
 ---
 
+## Demo
+
+<p align="center">
+  <img src="assets/demo1.png" alt="Demo 1" width="32%" />
+  <img src="assets/demo2.png" alt="Demo 2" width="32%" />
+  <img src="assets/demo3.png" alt="Demo 3" width="32%" />
+</p>
+
 ## 1. 安装
 
 ```bash
