@@ -20,6 +20,10 @@
   <img src="assets/demo3.png" alt="Demo 3" width="90%" />
 </p>
 
+<p align="center">
+  <img src="assets/demo4.png" alt="Demo 3" width="90%" />
+</p>
+
 | dddmr (ROS 2, C++) | 本项目 (纯 Python) |
 |---|---|
 | `dddmr_perception_3d` 静态层 | `perception.py`：体素降采样 / 法向量 / 可站立面提取 / 本体碰撞 / 膨胀代价 |
