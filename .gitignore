@@ -37,3 +37,6 @@ path.json
 path.html
 map_debug.html
 result.html
+
+# Fast 版的本地预处理缓存
+.dddmr_cache/

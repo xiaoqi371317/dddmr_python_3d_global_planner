@@ -24,14 +24,34 @@ def _add_config_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--inflation", type=float, help="障碍膨胀半径 (m)")
     p.add_argument("--heuristic-weight", type=float, help="A* 启发式权重, 0=Dijkstra")
     p.add_argument("--snap-radius", type=float, help="起终点吸附半径 (m)")
+    p.add_argument("--max-neighbors", type=int, help="每节点保留的邻居数 (18~24 接近上游边密度)")
+    p.add_argument("--backend", choices=["auto", "numba", "python", "scipy"],
+                   help="A* 后端, 默认 auto (有 numba 就用 numba)")
+    p.add_argument("--alt", type=int, metavar="N", help="ALT 地标数, 0=关闭, 迷宫型地图建议 8~16")
+    p.add_argument("--bidirectional", action="store_true", help="启用双向 A*")
+    p.add_argument("--cache-dir", help="预处理缓存目录, 二次加载可省掉整段建图")
+    p.add_argument("--no-collision-check", action="store_true",
+                   help="关闭长边碰撞校验 (复刻上游行为, 注意会放行穿墙边)")
+    p.add_argument("--compat", action="store_true", help="兼容模式: 与上游语义逐项对齐")
 
 
 def _config_from_args(args) -> PlannerConfig:
-    cfg = PlannerConfig.from_yaml(args.config) if getattr(args, "config", None) else PlannerConfig()
+    if getattr(args, "config", None):
+        cfg = PlannerConfig.from_yaml(args.config)
+    elif getattr(args, "compat", False):
+        cfg = PlannerConfig.compat()
+    else:
+        cfg = PlannerConfig()
+    if getattr(args, "no_collision_check", False):
+        cfg.edge_collision_check = False
+    if getattr(args, "bidirectional", False):
+        cfg.bidirectional = True
     mapping = {
         "voxel": "voxel_size", "robot_radius": "robot_radius", "robot_height": "robot_height",
         "max_slope": "max_slope_deg", "max_step": "max_step", "inflation": "inflation_radius",
         "heuristic_weight": "heuristic_weight", "snap_radius": "snap_radius",
+        "max_neighbors": "max_neighbors", "backend": "search_backend",
+        "alt": "alt_landmarks", "cache_dir": "cache_dir",
     }
     for arg_name, field_name in mapping.items():
         val = getattr(args, arg_name, None)

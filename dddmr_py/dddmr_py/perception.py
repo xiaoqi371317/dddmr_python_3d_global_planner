@@ -2,6 +2,11 @@
 
 对应 dddmr_perception_3d 中 static layer 的职责:
 把一张 PCD 地图变成"带代价的可通行节点集合", 供全局规划器建图搜索.
+
+优化版要点 (详见 OPTIMIZATION_REPORT.md):
+  * 体素降采样走一维哈希键 + bincount
+  * 2.5D 分层预筛, 法向量只算在候选点上
+  * 净空/膨胀两处的定半径查询改成内存有界的定长 kNN, 不再爆内存
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from .config import PlannerConfig
+from .fastops import (estimate_normals, first_match_in_radius, layer_bottom_mask,
+                      voxel_downsample)
 
 
 @dataclass
@@ -39,130 +46,94 @@ class GroundMap:
                 f"obstacles={len(self.obstacles)}>")
 
 
-# --------------------------------------------------------------------------
-def voxel_downsample(xyz: np.ndarray, voxel: float) -> np.ndarray:
-    """体素质心降采样. voxel<=0 时原样返回."""
-    if voxel <= 0 or len(xyz) == 0:
-        return np.asarray(xyz, dtype=np.float64)
-    keys = np.floor(np.asarray(xyz) / voxel).astype(np.int64)
-    _, inv, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
-    sums = np.zeros((len(counts), 3), dtype=np.float64)
-    np.add.at(sums, inv, xyz)
-    return sums / counts[:, None]
-
-
-def estimate_normals(xyz: np.ndarray, k: int = 16, radius: float = 0.0,
-                     chunk: int = 20000) -> tuple[np.ndarray, np.ndarray]:
-    """PCA 法向量估计.
-
-    返回 (normals(N,3) 单位向量且 nz>=0, residual(N,) 最小特征值的平方根≈平面残差).
-    """
-    xyz = np.asarray(xyz, dtype=np.float64)
-    n = len(xyz)
-    normals = np.tile(np.array([0.0, 0.0, 1.0]), (n, 1))
-    residual = np.zeros(n)
-    if n < 3:
-        return normals, residual
-    tree = cKDTree(xyz)
-    k = int(min(max(k, 4), n))
-
-    for beg in range(0, n, chunk):
-        end = min(beg + chunk, n)
-        if radius > 0:
-            # 半径近邻: 用 k 近邻再按半径裁剪, 保证向量化
-            dist, idx = tree.query(xyz[beg:end], k=k, workers=-1)
-            valid = dist <= radius
-            valid[:, 0] = True
-            idx = np.where(valid, idx, idx[:, :1])
-        else:
-            _, idx = tree.query(xyz[beg:end], k=k, workers=-1)
-        nb = xyz[idx]                                    # (c,k,3)
-        centered = nb - nb.mean(axis=1, keepdims=True)
-        cov = np.einsum("ikj,ikl->ijl", centered, centered) / max(k - 1, 1)
-        evals, evecs = np.linalg.eigh(cov)               # 升序
-        nrm = evecs[:, :, 0]
-        flip = nrm[:, 2] < 0
-        nrm[flip] *= -1.0
-        normals[beg:end] = nrm
-        residual[beg:end] = np.sqrt(np.clip(evals[:, 0], 0.0, None))
-    norm_len = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals /= np.where(norm_len > 1e-12, norm_len, 1.0)
-    return normals, residual
-
-
-# --------------------------------------------------------------------------
-def _cylinder_neighbors(query_xy: np.ndarray, tree_xy: cKDTree, radius: float):
-    """返回 (query_index, target_index) 的扁平配对, 便于向量化后处理."""
-    lists = tree_xy.query_ball_point(query_xy, radius, workers=-1)
-    lens = np.fromiter((len(l) for l in lists), dtype=np.int64, count=len(lists))
-    if lens.sum() == 0:
-        return np.empty(0, np.int64), np.empty(0, np.int64)
-    flat = np.concatenate([np.asarray(l, dtype=np.int64) for l in lists if l])
-    qidx = np.repeat(np.arange(len(lists), dtype=np.int64), lens)
-    return qidx, flat
-
-
 def build_ground_map(xyz: np.ndarray, cfg: Optional[PlannerConfig] = None,
                      verbose: bool = False) -> GroundMap:
     """把原始点云处理成 GroundMap (可通行节点 + 静态代价)."""
     cfg = cfg or PlannerConfig()
-    pts = voxel_downsample(np.asarray(xyz, dtype=np.float64), cfg.voxel_size)
+    fdt = np.float32 if cfg.dtype_32bit else np.float64
+    n_in = len(xyz)
+
+    pts = voxel_downsample(xyz, cfg.voxel_size, chunk=cfg.chunk_size, dtype=fdt)
     if verbose:
-        print(f"[perception] 降采样: {len(xyz)} -> {len(pts)} 点 "
-              f"(voxel={cfg.voxel_size} m)")
+        print(f"[perception] 降采样: {n_in} -> {len(pts)} 点 (voxel={cfg.voxel_size} m)")
 
-    normals, residual = estimate_normals(pts, k=cfg.normal_k, radius=cfg.normal_radius)
-    slope = np.arccos(np.clip(np.abs(normals[:, 2]), 0.0, 1.0))
+    pts64 = np.asarray(pts, dtype=np.float64)   # KD-tree 内部就是 float64, 复用一份
+    tree_all = cKDTree(pts64)
 
-    # 1) 可站立面候选: 坡度 + 局部平整度
+    # ---------------- 1) 可站立面候选 ----------------
     max_slope = np.deg2rad(cfg.max_slope_deg)
-    surface = (slope <= max_slope) & (residual <= cfg.max_roughness)
+    if cfg.fast_surface_prefilter:
+        # 只有"每个 XY 柱体内每一层的最低点"才可能站得住人.
+        # 其余点(墙面/家具侧面/天花板)直接归为障碍, 无需求法向量.
+        cand = np.flatnonzero(layer_bottom_mask(pts64, cfg.voxel_size, cfg.layer_gap,
+                                                band=cfg.max_step))
+        nrm_c, res_c = estimate_normals(pts64, k=cfg.normal_k, radius=cfg.normal_radius,
+                                        chunk=cfg.chunk_size, query_idx=cand,
+                                        tree=tree_all, workers=cfg.workers)
+        slope_c = np.arccos(np.clip(np.abs(nrm_c[:, 2]), 0.0, 1.0))
+        keep = (slope_c <= max_slope) & (res_c <= cfg.max_roughness)
+        surface = np.zeros(len(pts64), dtype=bool)
+        surface[cand[keep]] = True
+        node_idx = cand[keep]
+        node_normals = nrm_c[keep]
+        node_slope = slope_c[keep]
+        node_rough = res_c[keep]
+        if verbose:
+            print(f"[perception] 2.5D 预筛: {len(pts64)} -> {len(cand)} 个候选 "
+                  f"({100.0 * len(cand) / max(len(pts64), 1):.1f}%), 只对候选算法向量")
+        del nrm_c, res_c, slope_c
+    else:
+        normals, residual = estimate_normals(pts64, k=cfg.normal_k, radius=cfg.normal_radius,
+                                             chunk=cfg.chunk_size, tree=tree_all,
+                                             workers=cfg.workers)
+        slope = np.arccos(np.clip(np.abs(normals[:, 2]), 0.0, 1.0))
+        surface = (slope <= max_slope) & (residual <= cfg.max_roughness)
+        node_idx = np.flatnonzero(surface)
+        node_normals = normals[node_idx]
+        node_slope = slope[node_idx]
+        node_rough = residual[node_idx]
+        del normals, residual, slope
+
     if not surface.any():
         raise RuntimeError("未找到任何可站立面, 请放宽 max_slope_deg / max_roughness")
 
-    nodes = pts[surface]
-    node_normals = normals[surface]
-    node_slope = slope[surface]
-    node_rough = residual[surface]
-    obstacles = pts[~surface]
+    nodes = pts64[node_idx]
+    obstacles = pts64[~surface]
+    n_nodes = len(nodes)
     if verbose:
-        print(f"[perception] 可站立面候选 {len(nodes)} 个, 障碍点 {len(obstacles)} 个")
+        print(f"[perception] 可站立面候选 {n_nodes} 个, 障碍点 {len(obstacles)} 个")
 
-    # 2) 净空(clearance): 机器人本体圆柱内是否有点.
-    #    高度用"相对局部切平面"的高度, 否则斜坡上的上坡点会被误判成头顶障碍.
-    clearance = np.full(len(nodes), np.inf)
-    if len(pts):
-        tree_all_xy = cKDTree(pts[:, :2])
-        qi, ti = _cylinder_neighbors(nodes[:, :2], tree_all_xy, cfg.robot_radius)
-        if len(qi):
-            h = np.einsum("ij,ij->i", pts[ti] - nodes[qi], node_normals[qi])
-            above = h > cfg.max_step
-            if above.any():
-                np.minimum.at(clearance, qi[above], h[above])
+    # ---------------- 2) 净空 (clearance) ----------------
+    # 机器人本体圆柱内, 是否存在"高于脚下 max_step 但低于车高"的点.
+    # 注意: 判据本质是存在性 (clearance < robot_height), 定长 kNN 给出的
+    #      最近命中点即可给出与暴力搜索一致的结论.
+    clearance = np.full(n_nodes, np.inf)
+    _, hit_dz = first_match_in_radius(
+        pts64, nodes, node_normals, cfg.robot_radius,
+        dz_lo=cfg.max_step, dz_hi=cfg.robot_height,
+        k0=cfg.neighbor_k0, kmax=cfg.neighbor_kmax, chunk=cfg.chunk_size,
+        workers=cfg.workers)
+    low_ceiling = ~np.isnan(hit_dz)
+    clearance[low_ceiling] = hit_dz[low_ceiling]
+    del hit_dz
 
-    # 3) 静态代价: 障碍点在"机器人身体高度带"内 -> 膨胀
-    cost = np.zeros(len(nodes))
-    lethal = np.zeros(len(nodes), dtype=bool)
+    # ---------------- 3) 静态代价: 身体高度带内的障碍 -> 膨胀 ----------------
+    cost = np.zeros(n_nodes, dtype=np.float64)
+    lethal = np.zeros(n_nodes, dtype=bool)
     if len(obstacles):
-        tree_obs_xy = cKDTree(obstacles[:, :2])
-        qi, ti = _cylinder_neighbors(nodes[:, :2], tree_obs_xy, cfg.inflation_radius)
-        if len(qi):
-            dz = np.einsum("ij,ij->i", obstacles[ti] - nodes[qi], node_normals[qi])
-            band = (dz > cfg.max_step) & (dz < cfg.robot_height)
-            qi, ti = qi[band], ti[band]
-            if len(qi):
-                d = np.linalg.norm(obstacles[ti, :2] - nodes[qi, :2], axis=1)
-                nearest = np.full(len(nodes), np.inf)
-                np.minimum.at(nearest, qi, d)
-                inside = nearest <= cfg.inflation_radius
-                lethal |= nearest <= cfg.robot_radius
-                decay = (cfg.lethal_cost - 1.0) * np.exp(
-                    -cfg.cost_scaling_factor * np.clip(nearest - cfg.robot_radius, 0, None))
-                cost = np.where(inside, decay, 0.0)
-    cost = np.where(lethal, cfg.lethal_cost, cost)
+        nearest, _ = first_match_in_radius(
+            obstacles, nodes, node_normals, cfg.inflation_radius,
+            dz_lo=cfg.max_step, dz_hi=cfg.robot_height,
+            k0=cfg.neighbor_k0, kmax=cfg.neighbor_kmax, chunk=cfg.chunk_size,
+            workers=cfg.workers)
+        inside = nearest <= cfg.inflation_radius
+        lethal |= nearest <= cfg.robot_radius
+        decay = (cfg.lethal_cost - 1.0) * np.exp(
+            -cfg.cost_scaling_factor * np.clip(nearest - cfg.robot_radius, 0, None))
+        cost = np.where(inside, decay, 0.0)
+        del nearest, decay, inside
 
-    # 4) 净空不足(钻不过去) -> 致命
-    low_ceiling = clearance < cfg.robot_height
+    # ---------------- 4) 净空不足(钻不过去) -> 致命 ----------------
     lethal |= low_ceiling
     cost = np.where(lethal, cfg.lethal_cost, cost)
 
@@ -172,7 +143,13 @@ def build_ground_map(xyz: np.ndarray, cfg: Optional[PlannerConfig] = None,
               f"可通行率 {100.0 * (~lethal).mean():.1f}%")
 
     return GroundMap(
-        nodes=nodes, normals=node_normals, slope=node_slope, roughness=node_rough,
-        clearance=clearance, cost=cost, lethal=lethal, obstacles=obstacles,
+        nodes=nodes,
+        normals=np.ascontiguousarray(node_normals, dtype=fdt),
+        slope=np.ascontiguousarray(node_slope, dtype=fdt),
+        roughness=np.ascontiguousarray(node_rough, dtype=fdt),
+        clearance=np.ascontiguousarray(clearance, dtype=fdt),
+        cost=np.ascontiguousarray(cost, dtype=fdt),
+        lethal=lethal,
+        obstacles=np.ascontiguousarray(obstacles, dtype=fdt),
         kdtree=cKDTree(nodes), config=cfg,
     )
