@@ -4,13 +4,7 @@
 
 当前默认实现为 **Fast v2**：针对大规模点云优化了建图、内存占用和 A* 搜索，并默认阻止穿过障碍物的图边。
 
-<!-- MAINTAINER_EDITABLE_START: 在 GitHub 网页编辑 README 时，可直接替换下方公告内容。 -->
 
-> **维护者公告（可在线修改）**
->
-> 在这里填写版本发布说明、实验室消息、论文链接、视频链接或项目状态。删除本提示后直接写正文即可。
-
-<!-- MAINTAINER_EDITABLE_END -->
 
 ## 演示
 
@@ -30,9 +24,7 @@
   <img src="assets/demo4.png" alt="dddmr_py 演示 4" width="90%" />
 </p>
 
-<!-- MAINTAINER_EDITABLE_DEMO_START: 可在此处增加视频、GIF、论文图或新的 <img> 标签。 -->
 
-<!-- MAINTAINER_EDITABLE_DEMO_END -->
 
 ## Fast v2 的改进
 
@@ -173,16 +165,6 @@ cd dddmr_py
 python tests/test_planner.py
 ```
 
-<!-- MAINTAINER_EDITABLE_CONTACT_START: 可在 GitHub 网页编辑此处，填写作者、单位、引用方式、许可证或联系方式。 -->
-
-## 维护者信息（可在线修改）
-
-- 作者/团队：待补充
-- 单位/实验室：待补充
-- 论文或项目主页：待补充
-- 许可证与引用方式：待补充
-
-<!-- MAINTAINER_EDITABLE_CONTACT_END -->
 
 ## 致谢
 
